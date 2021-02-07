@@ -1,6 +1,8 @@
 # DiskCapacityForecasting
 
-There are two versions provided for this dashboard:
+A dashboard for predicting when disk drives will run out of space, using a linear trendline. (see ../LinearTrendline for algorithm details)
+
+There are two versions of this dashboard:
 
 `disk_analysis_sai.xml`:  (metric index data) For environments that already use Splunk App for Infrastructure. Supports environments that contain both Windows and *Nix hosts. This dashboard expects the SAI macro `sai_metrics_indexes` to exist.
 
@@ -10,3 +12,4 @@ With one or the other of these dashboards it should hopefully be easy enough to 
 
 Hit me up via a Github issue if you get stuck porting these dashboards.
 
+![screenshot](screenshot.png)
