@@ -1,0 +1,364 @@
+<form theme="dark">
+  <label>Disk Utilization</label>
+  <search id="base1">
+    <query>
+| mstats avg(_value) as "value" WHERE (metric_name="LogicalDisk.%_Free_Space" OR metric_name="LogicalDisk.Free_Megabytes" OR metric_name="df.free" OR metric_name="df.free_bytes") host=$host|s$ (instance=$mountpoint_escaped|s$ OR mountpoint=$mountpoint_escaped|s$) `sai_metrics_indexes` earliest=$trend_range2|s$ latest="now" BY metric_name span=$trend_granularity2|s$
+| eval value = if(metric_name=="df.free_bytes",(value / 1024),value) 
+| eval metric_name = case(metric_name=="LogicalDisk.%_Free_Space" OR metric_name=="df.free", "disk_free_percentage", metric_name=="LogicalDisk.Free_Megabytes" OR metric_name=="df.free_bytes", "disk_free_megabytes", true(), metric_name) 
+| xyseries _time metric_name value
+| timechart span=$trend_granularity2|s$ avg(disk_free_megabytes) as disk_free_megabytes  avg(disk_free_percentage) as disk_free_percentage
+          </query>
+    <earliest>$trend_range2$</earliest>
+    <latest>now</latest>
+    <sampleRatio>1</sampleRatio>
+  </search>
+  <fieldset submitButton="false">
+    <input type="text" token="host_filter" searchWhenChanged="true">
+      <label>Hosts</label>
+      <default>*</default>
+    </input>
+    <input type="text" token="ignore_small" searchWhenChanged="true">
+      <label>Ignore disks smaller than (MB)</label>
+      <default>1024</default>
+    </input>
+    <input type="text" token="ignore_drives" searchWhenChanged="true">
+      <label>Ignore disks named (regex)</label>
+      <default>/boot</default>
+      <initialValue>/boot</initialValue>
+    </input>
+    <input type="link" token="time1" searchWhenChanged="true" id="timeselectionpills">
+      <label>Predict using time range</label>
+      <choice value="past_24_hours">Past 24 hours</choice>
+      <choice value="past_7_days">Past 7 days</choice>
+      <choice value="past_14_days">Past 14 days</choice>
+      <choice value="past_30_days">Past 30 days</choice>
+      <default>past_24_hours</default>
+      <change>
+        <condition value="past_24_hours">
+          <set token="trend_range">-24h</set>
+          <set token="trend_granularity">30m</set>
+          <set token="day_multiplier">48</set>
+        </condition>
+        <condition value="past_7_days">
+          <set token="trend_range">-7d</set>
+          <set token="trend_granularity">3h</set>
+          <set token="day_multiplier">8</set>
+        </condition>
+        <condition value="past_14_days">
+          <set token="trend_range">-14d</set>
+          <set token="trend_granularity">6h</set>
+          <set token="day_multiplier">4</set>
+        </condition>
+        <condition value="past_30_days">
+          <set token="trend_range">-30d</set>
+          <set token="trend_granularity">1d</set>
+          <set token="day_multiplier">1</set>
+        </condition>
+      </change>
+    </input>
+  </fieldset>
+  <row depends="$NEVER_SHOW$">
+    <panel>
+      <html>
+        <style>
+#disk_analysis_summary_table .table th:nth-child(4), #disk_analysis_summary_table .table td:nth-child(4),
+#disk_analysis_summary_table .table th:nth-child(5), #disk_analysis_summary_table .table td:nth-child(5),
+#disk_analysis_summary_table .table th:nth-child(6), #disk_analysis_summary_table .table td:nth-child(6),
+#disk_analysis_summary_table .table th:nth-child(7), #disk_analysis_summary_table .table td:nth-child(7),
+#disk_analysis_summary_table .table th:nth-child(8), #disk_analysis_summary_table .table td:nth-child(8){ 
+  text-align:right 
+}
+#disk_analysis_summary_table .table th:nth-child(9), #disk_analysis_summary_table .table td:nth-child(9){ 
+  text-align:center 
+}
+#timeselectionpills,#timeselectionpills2 { width: 450px !important }
+        </style>
+      </html>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <table id="disk_analysis_summary_table">
+        <search>
+          <query>
+| mstats latest(_value) as "value" WHERE (metric_name="LogicalDisk.%_Free_Space" OR metric_name="LogicalDisk.Free_Megabytes") instance!="_Total" host=$host_filter|s$ `sai_metrics_indexes` BY host instance metric_name 
+| append [| mstats latest(_value) as "value" WHERE (metric_name="df.free" OR metric_name="df.free_bytes") `sai_metrics_indexes` BY host mountpoint metric_name ] 
+| eval mountpoint = host + "|" + if(isnull(mountpoint),instance,mountpoint) `comment("Normalise to free megabytes to match perfmon")` 
+| eval value = if(metric_name=="df.free_bytes",(value / 1024),value) 
+| eval metric_name = case(metric_name=="LogicalDisk.%_Free_Space" OR metric_name=="df.free", "disk_free_percentage", metric_name=="LogicalDisk.Free_Megabytes" OR metric_name=="df.free_bytes", "disk_free_megabytes", true(), metric_name) 
+| xyseries mountpoint metric_name value
+| join mountpoint type=outer  `comment("This subsearch will ge the overtime data for the sparkline and the linear regression line")`
+    [ | mstats avg(_value) as "value" WHERE (metric_name="LogicalDisk.%_Free_Space") instance!="_Total" host=$host_filter|s$ `sai_metrics_indexes` earliest=$trend_range|s$ latest="now" BY host instance metric_name span=$trend_granularity|s$
+    | append [| mstats avg(_value) as "value" WHERE (metric_name="df.free") host=$host_filter|s$ `sai_metrics_indexes` earliest=$trend_range|s$ latest="now" BY host mountpoint metric_name span=$trend_granularity|s$ ] 
+    | eval mountpoint = host + "|" + if(isnull(mountpoint),instance,mountpoint) 
+    | eval value = 100 - value 
+    | fields _time mountpoint value
+    `comment("Theses next few commands will fill gaps in the data")`  
+    | timechart limit=0 span=$trend_granularity|s$ avg(value) by mountpoint 
+    | filldown 
+    | reverse 
+    | filldown 
+    | reverse 
+    | untable _time mountpoint value    
+    `comment("Calculate the linear trendline - from https://wiki.splunk.com/Community:Plotting_a_linear_trendline")`
+    | eventstats count as numevents sum(_time) as sumX sum(value) as sumY sum(eval(_time*value)) as sumXY sum(eval(_time*_time)) as sumX2 sum(eval(value*value)) as sumY2 by mountpoint 
+    | eval slope=((numevents*sumXY)-(sumX*sumY))/((numevents*sumX2)-(sumX*sumX)) 
+    | eval yintercept= (sumY-(slope*sumX))/numevents
+    | eval newY=(yintercept + (slope*_time))
+    | streamstats window=1 global=f current=f last(value) as value_prev by mountpoint
+    | eval change = -1 * round(value - value_prev,2)
+    | stats list(change) as values values(slope) as slope by mountpoint 
+    | eval values = mvjoin(values,",") 
+    | fields mountpoint values slope ] 
+`comment("Sparkline is built manually so that it will have the granularity we want")`
+| eval sparkline_used = mvappend("##__SPARKLINE__##", split(values,",")) 
+| rex field=mountpoint "(?&lt;host&gt;.+?)\|(?&lt;mountpoint&gt;.*)" 
+| eval disk_free_bytes = round(disk_free_megabytes * 1048576,0)
+`comment("Determine the approximate size of the disk based on the percentage full and the amount of free megabytes remaining")`
+| eval total_size_bytes = disk_free_bytes / ( disk_free_percentage / 100) 
+| eval total_size_mb = total_size_bytes / 1048576 
+| search total_size_mb &gt; $ignore_small$
+| regex mountpoint != $ignore_drives|s$
+| eval used_percentage = 100 - disk_free_percentage 
+`comment("Daily growth is how much the disk usage increases/decreases based on the trend line for the whole period")`
+| eval Host = upper(host)
+| eval daily_growth = round(total_size_bytes * (slope * $day_multiplier$ / 100),0)
+| eval estimated_fill = if(slope &gt; 0,((max(0,disk_free_percentage) / abs(slope)) / $day_multiplier$),"99999999999") 
+| eventstats max(total_size_bytes) as largest_disk
+| eval bullet_total_size = 200 * (total_size_bytes / largest_disk)
+| eval bullet_used_size = used_percentage / 100 * bullet_total_size
+| eval relative_size = "##__SPARKLINE__## 200 " + bullet_used_size + " " + bullet_total_size
+| makemv relative_size
+| sort estimated_fill
+| table host Host mountpoint  relative_size  used_percentage total_size_bytes disk_free_bytes  daily_growth estimated_fill  sparkline_used
+| eval mountpoint_escaped = replace(mountpoint,"\\\\","\\\\\\\\")
+| rename mountpoint as Disk sparkline_used as "Change in percentage used over time (%)" relative_size as "Relative size"  used_percentage as "Current usage" disk_free_bytes as "Available space" total_size_bytes as "Total size" daily_growth as "Daily change trend" estimated_fill as "Time until full"
+`comment("fieldformat allows the table sorting to still function correctly")`
+| fieldformat "Current usage" = tostring(round('Current usage',1)) + " %" 
+| fieldformat "Available space" = case(
+    'Available space' &gt; 109951162777600, tostring(round(('Available space' / 1099511627776),0)) + " TB", 
+    'Available space' &gt; 10995116277760, tostring(round(('Available space' / 1099511627776),1)) + " TB", 
+    'Available space' &gt; 1099511627776, tostring(round(('Available space' / 1099511627776),2)) + " TB",
+    'Available space' &gt; 107374182400, tostring(round(('Available space' / 1073741824),0)) + " GB", 
+    'Available space' &gt; 10737418240, tostring(round(('Available space' / 1073741824),1)) + " GB", 
+    'Available space' &gt; 1073741824, tostring(round(('Available space' / 1073741824),2)) + " GB",
+    'Available space' &gt; 104857600, tostring(round(('Available space' / 1048576),0)) + " MB", 
+    'Available space' &gt; 10485760, tostring(round(('Available space' / 1048576),1)) + " MB", 
+    'Available space' &gt; 1048576, tostring(round(('Available space' / 1048576),2)) + " MB", 
+    'Available space' &gt; 102400, tostring(round(('Available space' / 1024),0)) + " KB", 
+    'Available space' &gt; 10240, tostring(round(('Available space' / 1024),1)) + " KB", 
+    'Available space' &gt; 1024, tostring(round(('Available space' / 1024),2)) + " KB", 
+    true(), tostring(round(('Available space'),2)) + " B") 
+| fieldformat "Total size" = case(
+    'Total size' &gt; 109951162777600, tostring(round(('Total size' / 1099511627776),0)) + " TB", 
+    'Total size' &gt; 10995116277760, tostring(round(('Total size' / 1099511627776),1)) + " TB", 
+    'Total size' &gt; 1099511627776, tostring(round(('Total size' / 1099511627776),2)) + " TB",
+    'Total size' &gt; 107374182400, tostring(round(('Total size' / 1073741824),0)) + " GB", 
+    'Total size' &gt; 10737418240, tostring(round(('Total size' / 1073741824),1)) + " GB", 
+    'Total size' &gt; 1073741824, tostring(round(('Total size' / 1073741824),2)) + " GB",
+    'Total size' &gt; 104857600, tostring(round(('Total size' / 1048576),0)) + " MB", 
+    'Total size' &gt; 10485760, tostring(round(('Total size' / 1048576),1)) + " MB", 
+    'Total size' &gt; 1048576, tostring(round(('Total size' / 1048576),2)) + " MB", 
+    'Total size' &gt; 102400, tostring(round(('Total size' / 1024),0)) + " KB", 
+    'Total size' &gt; 10240, tostring(round(('Total size' / 1024),1)) + " KB", 
+    'Total size' &gt; 1024, tostring(round(('Total size' / 1024),2)) + " KB", 
+    true(), tostring(round(('Total size'),2)) + " B") 
+| fieldformat "Daily change trend" = case(
+    'Daily change trend' == 0, "-", 
+    abs('Daily change trend') &gt; 109951162777600, tostring(round((abs('Daily change trend') / 1099511627776),0)) + " TB", 
+    abs('Daily change trend') &gt; 10995116277760, tostring(round((abs('Daily change trend') / 1099511627776),1)) + " TB", 
+    abs('Daily change trend') &gt; 1099511627776, tostring(round((abs('Daily change trend') / 1099511627776),2)) + " TB",
+    abs('Daily change trend') &gt; 107374182400, tostring(round((abs('Daily change trend') / 1073741824),0)) + " GB", 
+    abs('Daily change trend') &gt; 10737418240, tostring(round((abs('Daily change trend') / 1073741824),1)) + " GB", 
+    abs('Daily change trend') &gt; 1073741824, tostring(round((abs('Daily change trend') / 1073741824),2)) + " GB",
+    abs('Daily change trend') &gt; 104857600, tostring(round((abs('Daily change trend') / 1048576),0)) + " MB", 
+    abs('Daily change trend') &gt; 10485760, tostring(round((abs('Daily change trend') / 1048576),1)) + " MB", 
+    abs('Daily change trend') &gt; 1048576, tostring(round((abs('Daily change trend') / 1048576),2)) + " MB", 
+    abs('Daily change trend') &gt; 102400, tostring(round((abs('Daily change trend') / 1024),0)) + " KB", 
+    abs('Daily change trend') &gt; 10240, tostring(round((abs('Daily change trend') / 1024),1)) + " KB", 
+    abs('Daily change trend') &gt; 1024, tostring(round((abs('Daily change trend') / 1024),2)) + " KB", 
+    true(), tostring(round(abs('Daily change trend'),0)) + " B") + " " + case('Daily change trend' &gt; 0, " Used", 'Daily change trend' &lt; 0, "Freed", true(), "") 
+| fieldformat "Time until full" = case(
+    'Time until full' == 99999999999,"Never",
+    'Time until full' &gt; 3650, "10+ years",
+    'Time until full' &gt; 500, tostring(round('Time until full' / 365,1)) + " years",
+    true(), tostring(round('Time until full',0)) + " days")
+    </query>
+          <earliest>-24h</earliest>
+          <latest>now</latest>
+          <sampleRatio>1</sampleRatio>
+        </search>
+        <fields>["Host","Disk","Relative size","Current usage","Total size","Available space","Daily change trend","Time until full","Change in percentage used over time (%)"]</fields>
+        <option name="count">20</option>
+        <option name="dataOverlayMode">none</option>
+        <option name="drilldown">row</option>
+        <option name="percentagesRow">false</option>
+        <option name="refresh.display">progressbar</option>
+        <option name="rowNumbers">false</option>
+        <option name="totalsRow">false</option>
+        <option name="wrap">true</option>
+        <format type="sparkline" field="Relative size">
+          <option name="type">bullet</option>
+          <option name="width">200px</option>
+          <option name="height">20</option>
+          <option name="targetWidth">0px</option>
+        </format>
+        <format field="Change in percentage used over time (%)" type="sparkline">
+          <option name="type">bar</option>
+          <option name="barWidth">4</option>
+          <option name="barSpacing">1</option>
+          <option name="height">24</option>
+          <option name="barColor">red</option>
+          <option name="colorMap">
+            <option name="-1000:-0.001">red</option>
+            <option name="-0.001:0.001">gray</option>
+            <option name="0.001:">#44a744</option>
+          </option>
+        </format>
+        <drilldown>
+          <set token="host">$row.host$</set>
+          <set token="mountpoint">$row.Disk$</set>
+          <set token="mountpoint_escaped">$row.mountpoint_escaped$</set>
+        </drilldown>
+      </table>
+    </panel>
+  </row>
+  <row depends="$host$">
+    <panel>
+      <title>Disk:   $host$ - $mountpoint$</title>
+      <input type="link" token="time2" searchWhenChanged="true" id="timeselectionpills2">
+        <label></label>
+        <choice value="past_24_hours">Past 24 hours</choice>
+        <choice value="past_7_days">Past 7 days</choice>
+        <choice value="past_14_days">Past 14 days</choice>
+        <choice value="past_30_days">Past 30 days</choice>
+        <default>past_24_hours</default>
+        <change>
+          <condition value="past_24_hours">
+            <set token="trend_range2">-24h</set>
+            <set token="trend_granularity2">5m</set>
+          </condition>
+          <condition value="past_7_days">
+            <set token="trend_range2">-7d</set>
+            <set token="trend_granularity2">1h</set>
+          </condition>
+          <condition value="past_14_days">
+            <set token="trend_range2">-14d</set>
+            <set token="trend_granularity2">3h</set>
+          </condition>
+          <condition value="past_30_days">
+            <set token="trend_range2">-30d</set>
+            <set token="trend_granularity2">12h</set>
+          </condition>
+        </change>
+      </input>
+    </panel>
+  </row>
+  <row depends="$host$">
+    <panel>
+      <chart>
+        <title>Usage percentage</title>
+        <search base="base1">
+          <query>
+| fields _time disk_free_percentage
+| filldown 
+| reverse 
+| filldown 
+| reverse 
+| rename disk_free_percentage as value
+| eventstats count as numevents sum(_time) as sumX sum(value) as sumY sum(eval(_time*value)) as sumXY sum(eval(_time*_time)) as sumX2 sum(eval(value*value)) as sumY2
+| eval slope=((numevents*sumXY)-(sumX*sumY))/((numevents*sumX2)-(sumX*sumX)) 
+| eval yintercept= (sumY-(slope*sumX))/numevents 
+| eval newY=(yintercept + (slope*_time)) 
+| eval newY = 100 - newY
+| eval value = 100 - value
+| table _time value newY
+| rename value as "Usage %" newY as "Trend"
+          </query>
+        </search>
+        <option name="charting.axisLabelsX.majorLabelStyle.overflowMode">ellipsisNone</option>
+        <option name="charting.axisLabelsX.majorLabelStyle.rotation">0</option>
+        <option name="charting.axisTitleX.visibility">collapsed</option>
+        <option name="charting.axisTitleY.text">%</option>
+        <option name="charting.axisTitleY.visibility">visible</option>
+        <option name="charting.axisTitleY2.visibility">visible</option>
+        <option name="charting.axisX.abbreviation">none</option>
+        <option name="charting.axisX.scale">linear</option>
+        <option name="charting.axisY.abbreviation">none</option>
+        <option name="charting.axisY.scale">linear</option>
+        <option name="charting.axisY2.abbreviation">none</option>
+        <option name="charting.axisY2.enabled">0</option>
+        <option name="charting.axisY2.scale">inherit</option>
+        <option name="charting.chart">line</option>
+        <option name="charting.chart.bubbleMaximumSize">50</option>
+        <option name="charting.chart.bubbleMinimumSize">10</option>
+        <option name="charting.chart.bubbleSizeBy">area</option>
+        <option name="charting.chart.nullValueMode">gaps</option>
+        <option name="charting.chart.overlayFields">Trend</option>
+        <option name="charting.chart.showDataLabels">none</option>
+        <option name="charting.chart.sliceCollapsingThreshold">0.01</option>
+        <option name="charting.chart.stackMode">default</option>
+        <option name="charting.chart.style">shiny</option>
+        <option name="charting.drilldown">none</option>
+        <option name="charting.fieldColors">{"Trend":"#dddddd"}</option>
+        <option name="charting.fieldDashStyles">{"Trend":"dash"}</option>
+        <option name="charting.layout.splitSeries">0</option>
+        <option name="charting.layout.splitSeries.allowIndependentYRanges">0</option>
+        <option name="charting.legend.labelStyle.overflowMode">ellipsisMiddle</option>
+        <option name="charting.legend.mode">standard</option>
+        <option name="charting.legend.placement">none</option>
+        <option name="charting.lineWidth">2</option>
+        <option name="height">367</option>
+        <option name="refresh.display">progressbar</option>
+        <option name="trellis.enabled">0</option>
+        <option name="trellis.scales.shared">1</option>
+        <option name="trellis.size">medium</option>
+      </chart>
+    </panel>
+    <panel>
+      <chart>
+        <title>Available space (MB)</title>
+        <search base="base1">
+          <query>
+| fields _time disk_free_megabytes
+          </query>
+        </search>
+        <option name="charting.axisLabelsX.majorLabelStyle.overflowMode">ellipsisNone</option>
+        <option name="charting.axisLabelsX.majorLabelStyle.rotation">0</option>
+        <option name="charting.axisTitleX.visibility">collapsed</option>
+        <option name="charting.axisTitleY.visibility">collapsed</option>
+        <option name="charting.axisTitleY2.visibility">visible</option>
+        <option name="charting.axisX.abbreviation">none</option>
+        <option name="charting.axisX.scale">linear</option>
+        <option name="charting.axisY.abbreviation">none</option>
+        <option name="charting.axisY.scale">linear</option>
+        <option name="charting.axisY2.abbreviation">none</option>
+        <option name="charting.axisY2.enabled">0</option>
+        <option name="charting.axisY2.scale">inherit</option>
+        <option name="charting.chart">line</option>
+        <option name="charting.chart.bubbleMaximumSize">50</option>
+        <option name="charting.chart.bubbleMinimumSize">10</option>
+        <option name="charting.chart.bubbleSizeBy">area</option>
+        <option name="charting.chart.nullValueMode">gaps</option>
+        <option name="charting.chart.showDataLabels">none</option>
+        <option name="charting.chart.sliceCollapsingThreshold">0.01</option>
+        <option name="charting.chart.stackMode">default</option>
+        <option name="charting.chart.style">shiny</option>
+        <option name="charting.drilldown">none</option>
+        <option name="charting.fieldColors">{"Trend":"#dddddd"}</option>
+        <option name="charting.fieldDashStyles">{"Trend":"dash"}</option>
+        <option name="charting.layout.splitSeries">0</option>
+        <option name="charting.layout.splitSeries.allowIndependentYRanges">0</option>
+        <option name="charting.legend.labelStyle.overflowMode">ellipsisMiddle</option>
+        <option name="charting.legend.mode">standard</option>
+        <option name="charting.legend.placement">none</option>
+        <option name="charting.lineWidth">2</option>
+        <option name="height">367</option>
+        <option name="refresh.display">progressbar</option>
+        <option name="trellis.enabled">0</option>
+        <option name="trellis.scales.shared">1</option>
+        <option name="trellis.size">medium</option>
+      </chart>
+    </panel>
+  </row>
+</form>
